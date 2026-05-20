@@ -18,10 +18,11 @@ A voice-first personal AI agent for the phone. The user speaks (in Hebrew or Eng
 |---|---|---|
 | App framework | **React Native (Expo)** | Cross-platform iOS + Android, easy native module access |
 | LLM | **Claude Sonnet 4.6** (default), **Opus 4.7** (hard tasks) | Strong Hebrew, excellent tool use |
+| LLM auth | **Claude Max subscription via Claude Agent SDK** | OAuth login on the VPS, no per-token billing — see tradeoffs below |
 | STT (speech → text) | On-device, Hebrew `he-IL` | iOS `SFSpeechRecognizer`, Android `SpeechRecognizer`. Expo: `@react-native-voice/voice` |
 | TTS (text → speech) | On-device, Hebrew `he-IL` | iOS `AVSpeechSynthesizer`, Android `TextToSpeech`. Expo: `expo-speech` |
-| Wake word | **Picovoice Porcupine** | On-device, free for personal use, trainable to any Hebrew or English phrase |
-| Backend | **Node.js + Fastify** | Holds the Anthropic API key, runs tool execution, stores memory |
+| Wake word | **Picovoice Porcupine** | On-device, free for personal use, trainable to any Hebrew or English phrase. Wake phrase: **"hey agent"** |
+| Backend | **Node.js + Fastify** on a **Hetzner VPS** (~$5/mo) | Runs the Agent SDK, holds OAuth tokens, runs tool execution, stores memory |
 | Storage | SQLite (on-device cache) + Postgres (backend, source of truth) | Persistent memory across sessions |
 | Long-term memory | Postgres + pgvector for semantic recall, plus a structured "facts" table | See Memory & Learning section |
 | Auth | Single hardcoded device token | One user, one device — no login flow needed |
@@ -29,6 +30,17 @@ A voice-first personal AI agent for the phone. The user speaks (in Hebrew or Eng
 ### Honest tradeoff on on-device Hebrew voice
 
 The built-in Hebrew TTS voices on iOS/Android sound robotic compared to ElevenLabs. We're starting on-device because it's free, fast, and works offline. If voice quality becomes a problem, ElevenLabs Hebrew is a drop-in upgrade in phase 4 without rewriting the app.
+
+### Honest tradeoff on Claude Max as the backend LLM
+
+Claude Max is a **consumer subscription** designed for interactive use (claude.ai + Claude Code). The Claude Agent SDK can authenticate via Max OAuth, so technically the backend can use your subscription instead of paying per-token API fees. Real concerns to know about:
+
+- **Rate limits.** Max subscriptions have usage caps measured in messages over rolling windows. A chatty voice agent can burn through them fast — especially if Phase 4's nightly summarization jobs are aggressive. If you hit the limit, the agent goes silent until the window resets.
+- **Terms of service.** Subscriptions are for personal use. A personal voice agent that only you use *is* personal use, so this should be fine — but it's not the intended path, and Anthropic could change policy.
+- **Auth refresh.** OAuth tokens need refreshing. The Agent SDK handles this when run interactively, but a headless VPS process needs a re-login flow if the token expires or the session is invalidated.
+- **No fallback during outages.** With an API key you can route around issues; with a subscription you're tied to the consumer plane.
+
+**Plan:** start with Max subscription via Agent SDK. Build the backend so the LLM call is a single abstracted function — swapping to a pay-as-you-go API key later is a one-file change. If we hit rate limits in real use, that's the signal to switch.
 
 ## Architecture
 
@@ -125,17 +137,16 @@ The agent should feel like it actually knows you. Three layers:
 
 | Question | Answer |
 |---|---|
-| Activation | **Wake word** (Picovoice Porcupine) |
+| Activation | **Wake word** (Picovoice Porcupine), phrase: **"hey agent"** |
 | Memory | **Persistent + learning** — full transcript log, semantic recall, structured facts |
 | Users | **Just me** — no multi-user, no login |
 | Distribution | **Sideload to my own phone only** — no app store, no TestFlight beta |
+| Hosting | **VPS** (Hetzner CX22 or similar, ~$5/mo) |
+| LLM access | **Claude Max subscription via Agent SDK OAuth** — abstracted so we can switch to API key if rate limits bite |
 
 ## Still to decide
 
-1. **Wake phrase** — what word/phrase activates the agent? Best to pick something unusual so it doesn't false-trigger in normal speech. Hebrew or English?
-2. **Backend hosting** — Fly.io / Railway (managed, ~$5-10/mo) vs a small VPS (Hetzner ~$4/mo, more control) vs running on a home machine.
-3. **Anthropic API budget** — rough monthly cap, so we know whether to default to Sonnet 4.6 or Haiku 4.5 for everyday turns.
-4. **iOS sideload strategy** — free Apple Developer account (7-day re-signing required) vs $99/year paid account (1-year builds). Android sideload is free either way.
+1. **iOS sideload strategy** — free Apple Developer account (7-day re-signing required) vs $99/year paid account (1-year builds). Android sideload is free either way.
 
 ## Repo layout (proposed)
 
@@ -164,6 +175,8 @@ The agent should feel like it actually knows you. Three layers:
 - **Latency** — STT → network → Claude → TTS chain can feel slow. Mitigations: stream Claude's response and start TTS on the first sentence; cache embeddings; keep system prompt small.
 - **Memory cost growth** — embedding every turn forever costs storage + embedding API calls. Not a problem for a single user, but worth noting.
 - **Sideload friction on iOS** — free dev account requires re-signing every 7 days. Annoying but workable.
+- **Max subscription rate limits** — see tradeoff section. The mitigation is built into the architecture: LLM calls go through one abstraction so we can swap to API key in an afternoon if needed.
+- **OAuth token expiry on headless VPS** — needs a re-login flow. Worth scripting early so it's not a 3am panic.
 
 ## Next step
 
