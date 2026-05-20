@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Voice Agent</string>
+    <string name="hold_to_speak">החזק לדיבור</string>
+    <string name="listening">מקשיב…</string>
+    <string name="thinking">חושב…</string>
+    <string name="speaking">מדבר…</string>
+    <string name="mic_permission_needed">צריך גישה למיקרופון</string>
+    <string name="grant_permission">אפשר גישה</string>
+</resources>

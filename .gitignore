@@ -1,0 +1,27 @@
+# Node
+node_modules/
+dist/
+*.log
+.env
+.env.local
+
+# Android
+.gradle/
+local.properties
+build/
+*.iml
+.idea/
+captures/
+.cxx/
+*.apk
+*.aab
+*.keystore
+!debug.keystore
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+*.swp
