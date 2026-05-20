@@ -1,13 +1,13 @@
 # AI Voice Agent — Project Plan
 
-A voice-first personal AI agent for the phone. The user speaks (in Hebrew or English), the agent listens, thinks, and replies out loud. It can answer questions, control phone features, search the web, and call custom tools.
+A voice-first personal AI agent for Android. The user speaks (in Hebrew or English), the agent listens, thinks, and replies out loud. It can answer questions, control phone features, search the web, and call custom tools.
 
 ## Goals
 
 - Voice in, voice out — always-on **wake word** activation.
 - First-class Hebrew support (STT, TTS, and LLM reasoning).
-- Runs on both iOS and Android from a single codebase.
-- Can do real things on the phone: calendar, reminders, messages.
+- **Android only**, native Kotlin, sideloaded to the owner's phone.
+- Can do real things on the phone: calendar, reminders, messages, alarms.
 - Can search the web and call custom tools / personal APIs.
 - **Persistent memory + learning** — remembers everything across sessions and adapts to the user over time.
 - **Single user, single device** — only the owner uses it, only on their phone.
@@ -16,20 +16,21 @@ A voice-first personal AI agent for the phone. The user speaks (in Hebrew or Eng
 
 | Layer | Choice | Notes |
 |---|---|---|
-| App framework | **React Native (Expo)** | Cross-platform iOS + Android, easy native module access |
+| App framework | **Native Android (Kotlin + Jetpack Compose)** | Single platform, full access to Android APIs, clean background services |
+| Min SDK | **Android 10 (API 29)** | Covers modern phones, includes background mic features we need |
 | LLM | **Claude Sonnet 4.6** (default), **Opus 4.7** (hard tasks) | Strong Hebrew, excellent tool use |
 | LLM auth | **Claude Max subscription via Claude Agent SDK** | OAuth login on the VPS, no per-token billing — see tradeoffs below |
-| STT (speech → text) | On-device, Hebrew `he-IL` | iOS `SFSpeechRecognizer`, Android `SpeechRecognizer`. Expo: `@react-native-voice/voice` |
-| TTS (text → speech) | On-device, Hebrew `he-IL` | iOS `AVSpeechSynthesizer`, Android `TextToSpeech`. Expo: `expo-speech` |
-| Wake word | **Picovoice Porcupine** | On-device, free for personal use, trainable to any Hebrew or English phrase. Wake phrase: **"hey agent"** |
+| STT (speech → text) | Android `SpeechRecognizer` with `he-IL` locale | On-device or Google's cloud — system handles routing |
+| TTS (text → speech) | Android `TextToSpeech` with `he-IL` locale | On-device, free, robotic but works offline |
+| Wake word | **Picovoice Porcupine (Android SDK)** | Runs inside a foreground service, free for personal use. Wake phrase: **"hey agent"** |
 | Backend | **Node.js + Fastify** on a **Hetzner VPS** (~$5/mo) | Runs the Agent SDK, holds OAuth tokens, runs tool execution, stores memory |
-| Storage | SQLite (on-device cache) + Postgres (backend, source of truth) | Persistent memory across sessions |
+| Storage | Room (SQLite, on-device cache) + Postgres (backend, source of truth) | Persistent memory across sessions |
 | Long-term memory | Postgres + pgvector for semantic recall, plus a structured "facts" table | See Memory & Learning section |
 | Auth | Single hardcoded device token | One user, one device — no login flow needed |
 
 ### Honest tradeoff on on-device Hebrew voice
 
-The built-in Hebrew TTS voices on iOS/Android sound robotic compared to ElevenLabs. We're starting on-device because it's free, fast, and works offline. If voice quality becomes a problem, ElevenLabs Hebrew is a drop-in upgrade in phase 4 without rewriting the app.
+Android's built-in Hebrew TTS voices sound robotic compared to ElevenLabs. We're starting on-device because it's free, fast, and works offline. If voice quality becomes a problem, ElevenLabs Hebrew is a drop-in upgrade in Phase 5 without rewriting the app.
 
 ### Honest tradeoff on Claude Max as the backend LLM
 
@@ -46,25 +47,29 @@ Claude Max is a **consumer subscription** designed for interactive use (claude.a
 
 ```
 ┌──────────────────────────────────────────────────────┐
-│                  Phone (React Native)                │
+│            Android app (Kotlin + Compose)            │
 │                                                      │
-│  [Mic] → on-device STT (he-IL) → text                │
+│  Foreground service                                  │
+│   ├─ Porcupine wake word listener ("hey agent")      │
+│   ├─ SpeechRecognizer (he-IL)                        │
+│   └─ TextToSpeech (he-IL)                            │
 │                          │                           │
 │                          ▼                           │
 │                    HTTPS to backend                  │
-│                          │                           │
-│  [Speaker] ← on-device TTS (he-IL) ← response text   │
 └──────────────────────────┼───────────────────────────┘
                            │
 ┌──────────────────────────▼───────────────────────────┐
-│                Backend (Node or Python)              │
+│              Backend (Node.js + Fastify)             │
 │                                                      │
-│  Auth → Conversation store → Claude API (tool use)   │
-│                                       │              │
+│  Auth → Conversation store → Claude Agent SDK        │
+│              (Max OAuth)              │              │
 │                                       ▼              │
 │              Tool execution: web search,             │
 │              calendar, reminders, MCP servers,       │
 │              custom APIs                             │
+│                                       │              │
+│                                       ▼              │
+│              Postgres + pgvector (memory)            │
 └──────────────────────────────────────────────────────┘
 ```
 
@@ -73,9 +78,11 @@ Claude Max is a **consumer subscription** designed for interactive use (claude.a
 | Capability | Implementation |
 |---|---|
 | General Q&A | Claude with Hebrew system prompt + conversation memory |
-| Calendar (read/write events) | `expo-calendar` — works on both platforms |
-| Reminders | iOS: EventKit via native module. Android: AlarmManager or Google Tasks API |
-| Messages | iOS: limited to drafting via share sheet (Apple sandbox). Android: `SEND_SMS` permission allows direct send |
+| Calendar (read/write events) | Android `CalendarContract` provider via `READ_CALENDAR` / `WRITE_CALENDAR` |
+| Reminders / alarms | `AlarmManager` + notification channel, optional Google Tasks API for cloud sync |
+| Messages | `SEND_SMS` permission for direct send; can also read inbox with `READ_SMS` |
+| Phone calls | `CALL_PHONE` permission for placing calls (with voice confirmation step) |
+| Notifications | `NotificationListenerService` to read incoming notifications and read them aloud |
 | Web search | Claude's built-in web search tool — no extra infrastructure |
 | Custom tools | MCP servers running on backend, exposed to Claude via tool use |
 | Memory & learning | Hybrid system — see next section |
@@ -101,25 +108,27 @@ The agent should feel like it actually knows you. Three layers:
 ## Phases
 
 ### Phase 1 — MVP voice loop (1-2 weeks)
-- Expo app with push-to-talk button (wake word comes in Phase 2).
-- Hebrew STT → text shown on screen → text sent to backend.
-- Backend calls Claude (no tools yet) → response.
-- Response text → Hebrew TTS → speaker.
-- Basic conversation memory (last N turns in context).
+- Android Studio project, Kotlin + Compose, single push-to-talk button.
+- Hebrew `SpeechRecognizer` → text shown on screen → POST to backend.
+- Backend calls Claude via Agent SDK (no tools yet) → response.
+- Response → `TextToSpeech` (he-IL) → speaker.
+- Backend stores last N turns in Postgres for simple conversation memory.
 - Goal: prove the voice loop works end-to-end in Hebrew.
 
-### Phase 2 — Wake word + persistent memory (1-2 weeks)
-- Integrate Picovoice Porcupine, train a custom Hebrew/English wake phrase.
-- Background listening service (foreground service on Android, audio session on iOS).
+### Phase 2 — Wake word + foreground service + persistent memory (1-2 weeks)
+- Foreground service with persistent notification holds the mic.
+- Picovoice Porcupine integrated, custom "hey agent" wake model trained.
+- On wake, hand off to `SpeechRecognizer`, then back to wake-listening.
 - Postgres + pgvector setup on backend.
 - Semantic recall pipeline — embed every turn, retrieve top-K on new requests.
 - Structured facts table + `remember_fact`/`update_fact`/`forget_fact` tools.
 
 ### Phase 3 — Tools (1-2 weeks)
-- Web search tool.
-- Calendar tool (read + create events) via `expo-calendar`.
-- Reminders tool.
-- RTL-aware transcript view in the app.
+- Web search tool (Claude built-in).
+- Calendar tool: read + create events via `CalendarContract`.
+- Reminders/alarms tool via `AlarmManager`.
+- SMS send tool with voice confirmation before sending.
+- RTL-aware transcript screen in Compose.
 - Permissions model — which tools auto-run vs require voice confirmation.
 
 ### Phase 4 — Custom integrations + learning loop (1 week)
@@ -130,8 +139,9 @@ The agent should feel like it actually knows you. Three layers:
 
 ### Phase 5 — Polish
 - Optional ElevenLabs Hebrew TTS upgrade if on-device voice quality is too robotic.
-- Lock-screen interaction.
-- App icon, settings screen.
+- Lock-screen interaction via notification actions.
+- App icon, settings screen, battery-optimization opt-out instructions.
+- Optional: `NotificationListenerService` so the agent can read aloud incoming notifications.
 
 ## Decisions locked in
 
@@ -140,44 +150,48 @@ The agent should feel like it actually knows you. Three layers:
 | Activation | **Wake word** (Picovoice Porcupine), phrase: **"hey agent"** |
 | Memory | **Persistent + learning** — full transcript log, semantic recall, structured facts |
 | Users | **Just me** — no multi-user, no login |
-| Distribution | **Sideload to my own phone only** — no app store, no TestFlight beta |
+| Distribution | **Sideload APK to my own Android phone** — no Play Store |
+| Platform | **Android only**, native Kotlin |
 | Hosting | **VPS** (Hetzner CX22 or similar, ~$5/mo) |
 | LLM access | **Claude Max subscription via Agent SDK OAuth** — abstracted so we can switch to API key if rate limits bite |
-
-## Still to decide
-
-1. **iOS sideload strategy** — free Apple Developer account (7-day re-signing required) vs $99/year paid account (1-year builds). Android sideload is free either way.
 
 ## Repo layout (proposed)
 
 ```
 .
-├── app/                 # React Native (Expo) app
-│   ├── src/
-│   │   ├── screens/
-│   │   ├── voice/       # STT + TTS wrappers
-│   │   └── api/         # Backend client
-│   └── app.json
-├── backend/             # Node.js or Python server
+├── android/                       # Android app (Kotlin + Compose)
+│   ├── app/
+│   │   ├── src/main/
+│   │   │   ├── java/com/agent/
+│   │   │   │   ├── ui/            # Compose screens
+│   │   │   │   ├── voice/         # SpeechRecognizer + TTS wrappers
+│   │   │   │   ├── wake/          # Porcupine integration
+│   │   │   │   ├── service/       # Foreground service
+│   │   │   │   └── net/           # Backend client
+│   │   │   └── AndroidManifest.xml
+│   │   └── build.gradle.kts
+│   └── settings.gradle.kts
+├── backend/                       # Node.js + Fastify server
 │   ├── src/
 │   │   ├── routes/
-│   │   ├── claude/      # Anthropic SDK wrapper
-│   │   └── tools/       # Tool implementations + MCP servers
-│   └── package.json
-└── PLAN.md              # This file
+│   │   ├── llm/                   # Claude Agent SDK wrapper (swappable)
+│   │   ├── memory/                # Postgres + pgvector + facts table
+│   │   └── tools/                 # Tool implementations + MCP servers
+│   ├── package.json
+│   └── docker-compose.yml         # Postgres + app
+└── PLAN.md                        # This file
 ```
 
 ## Risks
 
 - **Hebrew on-device TTS quality** — may push us to ElevenLabs sooner than planned.
-- **iOS background mic limits** — Apple restricts always-on listening. Porcupine works in the background but only while the app holds an active audio session; we may need a persistent notification to keep the session alive, or a "tap to wake the wake word" pattern.
-- **iOS messaging sandbox** — direct SMS send is not possible; the agent can only draft via the share sheet.
+- **Android battery optimization** — manufacturers (Xiaomi, Samsung, OnePlus) aggressively kill background services. The foreground service + persistent notification helps, but we'll need to instruct opt-out from battery optimization for our app.
+- **Foreground service mic permission** — Android 14+ requires declaring `foregroundServiceType="microphone"` and asking for `RECORD_AUDIO`. Straightforward but easy to forget.
 - **Latency** — STT → network → Claude → TTS chain can feel slow. Mitigations: stream Claude's response and start TTS on the first sentence; cache embeddings; keep system prompt small.
 - **Memory cost growth** — embedding every turn forever costs storage + embedding API calls. Not a problem for a single user, but worth noting.
-- **Sideload friction on iOS** — free dev account requires re-signing every 7 days. Annoying but workable.
 - **Max subscription rate limits** — see tradeoff section. The mitigation is built into the architecture: LLM calls go through one abstraction so we can swap to API key in an afternoon if needed.
 - **OAuth token expiry on headless VPS** — needs a re-login flow. Worth scripting early so it's not a 3am panic.
 
 ## Next step
 
-Lock the three remaining decisions (wake phrase, hosting, budget), then start Phase 1.
+Start Phase 1: scaffold the Android project and backend, wire the push-to-talk voice loop end-to-end in Hebrew.
